@@ -24,6 +24,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse, urljoin, urlencode
 from urllib.request import Request, urlopen
 
+from contextlib import redirect_stdout
+from io import StringIO
+
 VERSION = "1.2"
 UA = "Mozilla/5.0 (compatible; Jatayu)"
 MAX_BYTES = 2_000_000
@@ -752,6 +755,11 @@ def main():
     s.add_argument("-t", "--timeout", type=int, default=10)
     s.add_argument("-k", "--insecure", action="store_true")
     s.add_argument("--json", action="store_true")
+    s.add_argument(
+        "--output",
+        metavar="FILE",
+        help="save a plain-text report to FILE while keeping terminal output"
+    )
     s.add_argument("--vuln-check", action="store_true")
     s.add_argument(
         "--find-origin", action="store_true",
@@ -804,10 +812,26 @@ def main():
             parsed.hostname, site_ips, cdn_name, args.timeout
         )
 
+    text_report = None
+    if args.output:
+        buffer = StringIO()
+        with redirect_stdout(buffer):
+            render(result)
+        text_report = buffer.getvalue()
+
     if args.json:
         print(json.dumps(result, indent=2))
+    elif text_report is not None:
+        print(text_report, end="")
     else:
         render(result)
+
+    if args.output:
+        try:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(text_report)
+        except OSError as e:
+            sys.exit(f"jatayu: cannot write report to {args.output}: {e}")
 
 
 if __name__ == "__main__":
