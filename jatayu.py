@@ -634,7 +634,7 @@ def find_origin(hostname, site_ips, cdn_name, timeout):
 def render(r):
     def row(k, v):
         if v:
-            print(f"{k:<22}{v}")
+            print(f"{k:<24}{v}")
 
     print(f'Jatayu {r["version"]}\n')
     row("Target", r["target"])
