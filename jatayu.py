@@ -5,13 +5,16 @@ Usage:
   python3 jatayu.py scan https://example.com
   python3 jatayu.py scan https://example.com --json
   python3 jatayu.py scan https://example.com --vuln-check
+  python3 jatayu.py scan https://example.com --find-origin
 """
 import argparse
+import ipaddress
 import json
 import os
 import re
 import socket
 import ssl
+import struct
 import sys
 import time
 import zlib
@@ -22,11 +25,17 @@ from urllib.parse import urlparse, urljoin, urlencode
 from urllib.request import Request, urlopen
 
 VERSION = "1.2"
-UA = "Mozilla/5.0 (compatible; Jatayu/1.2)"
+UA = "Mozilla/5.0 (compatible; Jatayu)"
 MAX_BYTES = 2_000_000
 MAX_ASSET_BYTES = 350_000
 MAX_ASSETS = 20
 NVD_DELAY = 6.5  # NVD allows ~5 requests / 30s without an API key
+DNS_RESOLVER = "1.1.1.1"
+COMMON_SUBDOMAINS = [
+    "direct", "origin", "origin-www", "www-origin", "ftp", "mail",
+    "webmail", "cpanel", "dev", "staging", "test", "admin", "portal",
+    "api", "backup", "old", "vpn", "remote", "secure", "beta"
+]
 
 SEC_HEADERS = [
     "Strict-Transport-Security",
@@ -341,7 +350,7 @@ def detect(page, signatures, timeout=10, verify=True):
 
         if unique:
             sources = {e["source"] for e in unique}
-            if len(sources) >= 2 or len(unique) >= 3:
+            if len(sources) >= 2 or len(unique) >= 2:
                 confidence = "High"
             else:
                 confidence = "Medium"
@@ -456,6 +465,172 @@ def vulnerability_lookup(techs, timeout):
     return results
 
 
+# --- Passive origin-IP recon ------------------------------------------
+
+def dns_parse_name(data, offset):
+    labels = []
+    seen_pointer = False
+    resume_offset = offset
+    while True:
+        length = data[offset]
+        if length == 0:
+            offset += 1
+            break
+        if (length & 0xC0) == 0xC0:
+            pointer = ((length & 0x3F) << 8) | data[offset + 1]
+            if not seen_pointer:
+                resume_offset = offset + 2
+            offset = pointer
+            seen_pointer = True
+            continue
+        offset += 1
+        labels.append(data[offset:offset + length].decode("ascii", "replace"))
+        offset += length
+    return ".".join(labels), (resume_offset if seen_pointer else offset)
+
+
+def dns_query(name, rtype, resolver=DNS_RESOLVER, timeout=3.0):
+    """Minimal stub DNS resolver (A / NS / MX / CNAME), no dependencies."""
+    qtypes = {"A": 1, "NS": 2, "MX": 15, "CNAME": 5}
+    qtype = qtypes[rtype]
+
+    tid = int.from_bytes(os.urandom(2), "big")
+    header = struct.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0)
+    qname = b"".join(
+        bytes([len(label)]) + label.encode("ascii", "ignore")
+        for label in name.strip(".").split(".") if label
+    ) + b"\x00"
+    packet = header + qname + struct.pack(">HH", qtype, 1)
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        try:
+            sock.sendto(packet, (resolver, 53))
+            data, _ = sock.recvfrom(4096)
+        finally:
+            sock.close()
+    except (OSError, socket.timeout):
+        return []
+
+    try:
+        _, flags, qdcount, ancount, _, _ = struct.unpack(">HHHHHH", data[:12])
+        offset = 12
+        for _ in range(qdcount):
+            _, offset = dns_parse_name(data, offset)
+            offset += 4
+
+        results = []
+        for _ in range(ancount):
+            _, offset = dns_parse_name(data, offset)
+            rtype_, _, _, rdlen = struct.unpack(">HHIH", data[offset:offset + 10])
+            offset += 10
+            rdata = data[offset:offset + rdlen]
+
+            if rtype_ == 1 and len(rdata) == 4:
+                results.append(".".join(str(b) for b in rdata))
+            elif rtype_ == 2:
+                val, _ = dns_parse_name(data, offset)
+                results.append(val)
+            elif rtype_ == 5:
+                val, _ = dns_parse_name(data, offset)
+                results.append(val)
+            elif rtype_ == 15 and len(rdata) >= 2:
+                pref = struct.unpack(">H", rdata[:2])[0]
+                exch, _ = dns_parse_name(data, offset + 2)
+                results.append(f"{pref} {exch}")
+
+            offset += rdlen
+        return results
+    except (struct.error, IndexError):
+        return []
+
+
+def crtsh_lookup(domain, timeout):
+    url = "https://crt.sh/?q=%25." + domain + "&output=json"
+    try:
+        req = Request(url, headers={"User-Agent": UA})
+        with urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except Exception:
+        return []
+
+    names = set()
+    for entry in data:
+        for n in entry.get("name_value", "").split("\n"):
+            n = n.strip().lower().lstrip("*.")
+            if n:
+                names.add(n)
+    return sorted(names)
+
+
+def cloudflare_ranges(timeout):
+    nets = []
+    for url in ("https://www.cloudflare.com/ips-v4",
+                "https://www.cloudflare.com/ips-v6"):
+        try:
+            req = Request(url, headers={"User-Agent": UA})
+            with urlopen(req, timeout=timeout) as resp:
+                text = resp.read().decode("utf-8", "replace")
+            for line in text.splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        nets.append(ipaddress.ip_network(line))
+                    except ValueError:
+                        pass
+        except Exception:
+            continue
+    return nets
+
+
+def find_origin(hostname, site_ips, cdn_name, timeout):
+    labels = hostname.strip(".").split(".")
+    parent = ".".join(labels[1:]) if len(labels) > 2 else hostname
+
+    nets = cloudflare_ranges(timeout) if cdn_name == "Cloudflare" else []
+    known_ips = set(site_ips)
+
+    def is_outside(ip):
+        if nets:
+            try:
+                return not any(ipaddress.ip_address(ip) in n for n in nets)
+            except ValueError:
+                return False
+        return ip not in known_ips
+
+    result = {
+        "parent_domain": parent,
+        "ns_records": dns_query(parent, "NS", timeout=timeout),
+        "mx_records": dns_query(parent, "MX", timeout=timeout),
+        "crtsh": crtsh_lookup(parent, timeout),
+        "candidates": [],
+        "range_source": "Cloudflare published ranges" if nets
+                         else "site's own resolved IP(s) only (less reliable)"
+    }
+
+    for sub in COMMON_SUBDOMAINS:
+        fqdn = f"{sub}.{parent}"
+        for ip in dns_query(fqdn, "A", timeout=timeout):
+            result["candidates"].append({
+                "host": fqdn, "ip": ip, "outside": is_outside(ip)
+            })
+
+    for mx in result["mx_records"]:
+        exch = mx.split(" ", 1)[-1].rstrip(".")
+        if exch:
+            for ip in dns_query(exch, "A", timeout=timeout):
+                result["candidates"].append({
+                    "host": exch, "ip": ip, "outside": is_outside(ip)
+                })
+
+    return result
+
+
+# ------------------------------------------------------------------------
+
+
 def render(r):
     def row(k, v):
         if v:
@@ -499,8 +674,15 @@ def render(r):
 
     if "vulnerabilities" in r:
         print("\nVulnerability Lookup")
+        has_version = any(
+            t["version"] for ts in techs.values() for t in ts
+        )
         if not r["vulnerabilities"]:
-            print("  No candidate CVEs returned.")
+            print(
+                "  No candidate CVEs returned."
+                if has_version
+                else "  Skipped: no technology version was detected."
+            )
         for v in r["vulnerabilities"]:
             if "cve" in v:
                 print(
@@ -517,6 +699,39 @@ def render(r):
                 if v.get("error"):
                     print(f'    {v["error"]}')
 
+    if "origin_recon" in r:
+        o = r["origin_recon"]
+        print("\nOrigin Recon (passive - verify manually, do not scan these IPs without authorization)")
+        row("  Parent domain", o["parent_domain"])
+        row("  IP comparison basis", o["range_source"])
+
+        if o["ns_records"]:
+            print("  NS records:")
+            for ns in o["ns_records"]:
+                print(f"    {ns}")
+        if o["mx_records"]:
+            print("  MX records:")
+            for mx in o["mx_records"]:
+                print(f"    {mx}")
+
+        if o["crtsh"]:
+            shown = o["crtsh"][:40]
+            print(f'  crt.sh subdomains ({len(o["crtsh"])}):')
+            for name in shown:
+                print(f"    {name}")
+            if len(o["crtsh"]) > 40:
+                print(f'    ... and {len(o["crtsh"]) - 40} more')
+        else:
+            print("  crt.sh: no results or lookup failed")
+
+        flagged = [c for c in o["candidates"] if c["outside"]]
+        if flagged:
+            print("  Candidates resolving outside the CDN range:")
+            for c in flagged:
+                print(f'    {c["host"]} -> {c["ip"]}')
+        else:
+            print("  No DNS candidates resolved outside the known CDN range")
+
 
 def main():
     p = argparse.ArgumentParser(
@@ -530,6 +745,10 @@ def main():
     s.add_argument("-k", "--insecure", action="store_true")
     s.add_argument("--json", action="store_true")
     s.add_argument("--vuln-check", action="store_true")
+    s.add_argument(
+        "--find-origin", action="store_true",
+        help="passive origin-IP recon via crt.sh and DNS (subdomains, MX, NS)"
+    )
     args = p.parse_args()
 
     if args.cmd != "scan":
@@ -560,6 +779,21 @@ def main():
     if args.vuln_check:
         result["vulnerabilities"] = vulnerability_lookup(
             result["technologies"], args.timeout
+        )
+
+    if args.find_origin:
+        try:
+            _, _, site_ips = socket.gethostbyname_ex(parsed.hostname)
+        except (socket.error, TypeError):
+            site_ips = [result["ip"]] if result["ip"] != "-" else []
+
+        cdn_name = next(
+            (t["name"] for t in result["technologies"].get("CDN / WAF", [])
+             if t["name"] == "Cloudflare"),
+            None
+        )
+        result["origin_recon"] = find_origin(
+            parsed.hostname, site_ips, cdn_name, args.timeout
         )
 
     if args.json:
