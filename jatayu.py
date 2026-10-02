@@ -1,6 +1,5 @@
-
 #!/usr/bin/env python3
-"""Jatayu 1.2 - Web technology fingerprinting.
+"""Jatayu - Web technology fingerprinting.
 
 Usage:
   python3 jatayu.py scan https://example.com
@@ -9,6 +8,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import re
 import socket
 import ssl
@@ -26,6 +26,7 @@ UA = "Mozilla/5.0 (compatible; Jatayu/1.2)"
 MAX_BYTES = 2_000_000
 MAX_ASSET_BYTES = 350_000
 MAX_ASSETS = 20
+NVD_DELAY = 6.5  # NVD allows ~5 requests / 30s without an API key
 
 SEC_HEADERS = [
     "Strict-Transport-Security",
@@ -46,11 +47,16 @@ ORDER = [
 
 
 def load_signatures():
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, "technologies.txt")
+    if not os.path.exists(path):
+        path = "technologies.txt"
+
     try:
-        with open("technologies.txt", "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        sys.exit("jatayu: technologies.txt not found in current directory")
+        sys.exit("jatayu: technologies.txt not found (script folder or current directory)")
     except json.JSONDecodeError as e:
         sys.exit(f"jatayu: invalid technologies.txt: {e}")
 
@@ -66,6 +72,12 @@ def load_signatures():
         for key in ("body", "assets", "asset_content"):
             if key in item and not isinstance(item[key], list):
                 sys.exit(f"jatayu: {item['name']}: {key} must be a list")
+        for key in ("headers", "meta"):
+            for k, pat in item.get(key, {}).items():
+                try:
+                    re.compile(pat)
+                except (re.error, TypeError):
+                    sys.exit(f"jatayu: {item['name']}: bad pattern for {key}.{k}")
     return data
 
 
@@ -189,26 +201,32 @@ def same_origin(a, b):
 def inspect_assets(page, timeout, verify):
     parser = PageParser()
     parser.feed(page["html"])
+    parser.close()
 
+    # assets: every http(s) asset URL, used for URL matching (includes
+    # third-party hosts). fetchable: same-origin .js/.css, used for content.
     assets = []
+    fetchable = []
     for raw in parser.assets:
         url = urljoin(page["final"], raw)
         p = urlparse(url)
         if p.scheme not in ("http", "https"):
             continue
-        if not same_origin(page["final"], url):
-            continue
-        if not p.path.lower().endswith((".js", ".css")):
-            continue
         if url not in assets:
             assets.append(url)
+        if (same_origin(page["final"], url)
+                and p.path.lower().endswith((".js", ".css"))
+                and url not in fetchable):
+            fetchable.append(url)
 
     contents = []
-    for url in assets[:MAX_ASSETS]:
+    for url in fetchable[:MAX_ASSETS]:
         try:
             result = fetch(
                 url, timeout, verify=verify, limit=MAX_ASSET_BYTES
             )
+            if result["status"] != 200:
+                continue
             contents.append({
                 "url": url,
                 "content": result["html"].lower()
@@ -227,7 +245,6 @@ def detect(page, signatures, timeout=10, verify=True):
     headers = page["headers"]
     cookies = page["cookies"]
     body = page["html"].lower()
-    asset_urls = "\n".join(assets).lower()
 
     found = {}
 
@@ -239,15 +256,21 @@ def detect(page, signatures, timeout=10, verify=True):
         # HTTP response headers
         for key, pattern in sig.get("headers", {}).items():
             value = headers.get(key.lower(), "")
-            if value and re.search(pattern, value, re.I):
+            m = re.search(pattern, value, re.I) if value else None
+            if m:
                 evidence.append({
                     "source": "header",
                     "detail": f"{key}: {value[:180]}"
                 })
+                v = None
                 if sig.get("version_header", "").lower() == key.lower():
-                    m = re.search(r"\d+(?:\.\d+)+", value)
-                    if m:
-                        versions.append(m.group(0))
+                    v = re.search(r"\d+(?:\.\d+)+", value)
+                elif (key.lower() in ("server", "x-powered-by")
+                      and not sig.get("no_version")):
+                    # version must directly follow the product name
+                    v = re.search(r"^[/ ]v?(\d+(?:\.\d+)+)", value[m.end():])
+                if v:
+                    versions.append(v.group(v.lastindex or 0))
 
         # Meta tags
         for key, pattern in sig.get("meta", {}).items():
@@ -289,7 +312,11 @@ def detect(page, signatures, timeout=10, verify=True):
                     "source": "asset_url",
                     "detail": matches[0][:220]
                 })
-                m = re.search(r"\d+\.\d+(?:\.\d+)?", matches[0])
+                u = urlparse(matches[0])
+                m = re.search(
+                    r"(?<![\d.])\d+\.\d+(?:\.\d+)?",
+                    u.path + " " + u.query
+                )
                 if m:
                     versions.append(m.group(0))
 
@@ -316,8 +343,6 @@ def detect(page, signatures, timeout=10, verify=True):
             sources = {e["source"] for e in unique}
             if len(sources) >= 2 or len(unique) >= 3:
                 confidence = "High"
-            elif len(unique) == 1:
-                confidence = "Medium"
             else:
                 confidence = "Medium"
 
@@ -417,8 +442,6 @@ def vulnerability_lookup(techs, timeout):
                         "source": "NVD"
                     })
 
-                time.sleep(0.7)
-
             except Exception as e:
                 results.append({
                     "technology": name,
@@ -426,6 +449,9 @@ def vulnerability_lookup(techs, timeout):
                     "status": "Lookup failed",
                     "error": str(e)[:200]
                 })
+
+            finally:
+                time.sleep(NVD_DELAY)
 
     return results
 
@@ -448,8 +474,8 @@ def render(r):
 
     stats = r["asset_scan"]
     print(
-        f'Assets inspected: {stats["assets_inspected"]}'
-        f'/{stats["assets_found"]}'
+        f'Assets inspected: {stats["assets_inspected"]} '
+        f'({stats["assets_found"]} referenced)'
     )
 
     techs = r["technologies"]
@@ -488,6 +514,8 @@ def render(r):
                     f'  {v["technology"]}: '
                     f'{v.get("status", "Unknown")}'
                 )
+                if v.get("error"):
+                    print(f'    {v["error"]}')
 
 
 def main():
