@@ -1,8 +1,8 @@
 
 [
   {"name":"nginx","category":"Web Server","headers":{"server":"nginx"}},
-  {"name":"Apache","category":"Web Server","headers":{"server":"Apache"}},
-  {"name":"Apache Tomcat","category":"Web Server","headers":{"server":"Apache-Coyote|Tomcat"}},
+  {"name":"Apache","category":"Web Server","headers":{"server":"^Apache(?!-Coyote)"}},
+  {"name":"Apache Tomcat","category":"Web Server","headers":{"server":"Apache-Coyote|Tomcat"},"no_version":true},
   {"name":"Microsoft IIS","category":"Web Server","headers":{"server":"Microsoft-IIS"}},
   {"name":"Envoy","category":"Web Server","headers":{"server":"envoy"}},
   {"name":"Caddy","category":"Web Server","headers":{"server":"Caddy"}},
@@ -19,7 +19,7 @@
   {"name":"Cloudflare","category":"CDN / WAF","headers":{"server":"cloudflare","cf-ray":".+"}},
   {"name":"Amazon CloudFront","category":"CDN / WAF","headers":{"via":"CloudFront","x-amz-cf-id":".+"}},
   {"name":"Akamai","category":"CDN / WAF","headers":{"x-akamai-request-id":".+"}},
-  {"name":"Fastly","category":"CDN / WAF","headers":{"x-served-by":"cache-"}},
+  {"name":"Fastly Cache","category":"Caching","headers":{"x-fastly-request-id":".+"}},
   {"name":"Imperva","category":"CDN / WAF","headers":{"x-iinfo":".+"}},
   {"name":"Sucuri","category":"CDN / WAF","headers":{"x-sucuri-id":".+"}},
   {"name":"AWS ALB","category":"CDN / WAF","cookies":{"AWSALB":""}},
@@ -56,8 +56,8 @@
   {"name":"Nuxt.js","category":"Web Framework","body":["/_nuxt/"]},
   {"name":"Symfony","category":"Web Framework","cookies":{"sf_redirect":""}},
   {"name":"ASP.NET Core","category":"Web Framework","headers":{"server":"Kestrel"}},
-  {"name":"FastAPI","category":"Web Framework","body":["application/json"],"meta":{"generator":"FastAPI"}},
-  {"name":"Phoenix","category":"Web Framework","body":["phoenix_live_view","phx-submit","phx-hook"]} 
+  {"name":"FastAPI","category":"Web Framework","meta":{"generator":"FastAPI"}},
+  {"name":"Phoenix","category":"Web Framework","body":["phoenix_live_view","phx-submit","phx-hook"]},
   {"name":"Sails.js","category":"Web Framework","body":["sails.io.js"]},
   {"name":"NestJS","category":"Web Framework","body":["nestjs"]},
 
@@ -133,7 +133,7 @@
   {"name":"Microsoft Clarity","category":"Analytics","assets":["clarity.ms"]},
   {"name":"Matomo","category":"Analytics","assets":["matomo.js","piwik.js"]},
   {"name":"Plausible","category":"Analytics","assets":["plausible.io/js"]},
-  {"name":"Segment","category":"Analytics","assets":["cdn.segment.com","analytics.js"]},
+  {"name":"Segment","category":"Analytics","assets":["cdn.segment.com","segment.com/analytics.js"]},
   {"name":"Amplitude","category":"Analytics","assets":["amplitude.com","amplitude.min.js"]},
   {"name":"Mixpanel","category":"Analytics","assets":["mixpanel"]},
   {"name":"New Relic","category":"Analytics","assets":["newrelic","nr-data.net"]},
@@ -167,6 +167,6 @@
   {"name":"Vimeo Embed","category":"Other","assets":["player.vimeo.com"]},
 
   {"name":"MySQL","category":"Database","headers":{"x-powered-by":"mysql"}},
-  {"name":"MongoDB","category":"Database","body":["mongodb"]},
+  {"name":"MongoDB","category":"Database","headers":{"x-mongodb":".+"}},
   {"name":"Redis","category":"Database","headers":{"x-redis":".+"}}
 ]
