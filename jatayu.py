@@ -553,8 +553,8 @@ def crtsh_lookup(domain, timeout):
         with urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
         data = json.loads(raw.decode("utf-8", "replace"))
-    except Exception:
-        return []
+    except Exception as e:
+        return None, str(e)[:200]  # None = lookup failed, not "no certs"
 
     names = set()
     for entry in data:
@@ -562,7 +562,7 @@ def crtsh_lookup(domain, timeout):
             n = n.strip().lower().lstrip("*.")
             if n:
                 names.add(n)
-    return sorted(names)
+    return sorted(names), None
 
 
 def cloudflare_ranges(timeout):
@@ -599,12 +599,13 @@ def find_origin(hostname, site_ips, cdn_name, timeout):
             except ValueError:
                 return False
         return ip not in known_ips
-
+    crtsh_names, crtsh_error = crtsh_lookup(parent, timeout)
     result = {
         "parent_domain": parent,
         "ns_records": dns_query(parent, "NS", timeout=timeout),
         "mx_records": dns_query(parent, "MX", timeout=timeout),
-        "crtsh": crtsh_lookup(parent, timeout),
+        "crtsh": crtsh_names,
+        "crtsh_error": crtsh_error,
         "candidates": [],
         "range_source": "Cloudflare published ranges" if nets
                          else "site's own resolved IP(s) only (less reliable)"
@@ -630,11 +631,10 @@ def find_origin(hostname, site_ips, cdn_name, timeout):
 
 # ------------------------------------------------------------------------
 
-
 def render(r):
     def row(k, v):
         if v:
-            print(f"{k:<18}{v}")
+            print(f"{k:<22}{v}")
 
     print(f'Jatayu {r["version"]}\n')
     row("Target", r["target"])
@@ -721,8 +721,10 @@ def render(r):
                 print(f"    {name}")
             if len(o["crtsh"]) > 40:
                 print(f'    ... and {len(o["crtsh"]) - 40} more')
+        elif o["crtsh"] is None:
+            print(f'  crt.sh: lookup failed ({o["crtsh_error"]})')
         else:
-            print("  crt.sh: no results or lookup failed")
+            print("  crt.sh: no certificates found in CT logs")
 
         flagged = [c for c in o["candidates"] if c["outside"]]
         if flagged:
