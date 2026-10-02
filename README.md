@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.svg" width="140" alt="Jatayu logo"/>
+<img src="assets/logo.jpeg" width="140" alt="Jatayu logo"/>
 
 # Jatayu
 
