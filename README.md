@@ -84,12 +84,24 @@ CMS
 | `--json`          | Print results as JSON instead of plain text         |
 | `--vuln-check`    | Look up candidate CVEs for detected versions         |
 | `--find-origin`   | Passive origin-IP recon (crt.sh + DNS)               |
+| `--output FILE` | Save a plain-text report to FILE while preserving terminal output |
 
 ```bash
 python3 jatayu.py scan https://example.com --json
 python3 jatayu.py scan https://example.com --vuln-check
 python3 jatayu.py scan https://example.com --find-origin
 ```
+
+Save a plain-text report while also printing it to the terminal:
+
+```bash
+python3 jatayu.py scan https://example.com --output result.txt
+```
+
+The file is written using UTF-8 encoding. An existing file is overwritten.
+When combined with `--json`, terminal output remains JSON and the saved
+report is plain text.
+
 
 ## Adding your own signatures
 
