@@ -57,7 +57,7 @@
   {"name":"Symfony","category":"Web Framework","cookies":{"sf_redirect":""}},
   {"name":"ASP.NET Core","category":"Web Framework","headers":{"server":"Kestrel"}},
   {"name":"FastAPI","category":"Web Framework","body":["application/json"],"meta":{"generator":"FastAPI"}},
-  {"name":"Phoenix","category":"Web Framework","headers":{"x-request-id":".+"},"cookies":{"_session_id":""}},
+  {"name":"Phoenix","category":"Web Framework","body":["phoenix_live_view","phx-submit","phx-hook"]} 
   {"name":"Sails.js","category":"Web Framework","body":["sails.io.js"]},
   {"name":"NestJS","category":"Web Framework","body":["nestjs"]},
 
