@@ -740,6 +740,12 @@ def main():
         prog="jatayu",
         description="Jatayu - web technology fingerprinting"
     )
+
+    p.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {VERSION}"
+    )
     sub = p.add_subparsers(dest="cmd")
     s = sub.add_parser("scan", help="identify website technologies")
     s.add_argument("url")

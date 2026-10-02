@@ -53,6 +53,14 @@ Make sure `jatayu.py` and `technologies.txt` are in the same folder.
 
 ## Usage
 
+Check the tool version:
+
+```bash
+python3 jatayu.py --version
+```
+
+Scan a website:
+
 ```bash
 python3 jatayu.py scan https://example.com
 ```
